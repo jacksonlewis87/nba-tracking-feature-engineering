@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+
+*.pytest_cache*
+
+.idea/
+/data/
+/local/testing/
+/local/local_constants.py
