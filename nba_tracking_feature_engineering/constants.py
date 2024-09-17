@@ -5,3 +5,4 @@ class DataPaths(Enum):
     RAW = "raw"
     PREPROCESSED = "preprocessed"
     TENSORS = "tensors"
+    PARQUET = "parquet"

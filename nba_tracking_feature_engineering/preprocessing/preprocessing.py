@@ -1,4 +1,7 @@
 import os
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pandas as pd
 import torch
 
 from nba_tracking_data_commons.dto.tracking import Coordinate, Frame, Event
@@ -214,3 +217,40 @@ def write_tensors(data_path: str):
         torch.save(
             (tensor_list, tensor_size_list), os.path.join(data_path, DataPaths.TENSORS.value, f"{event_file}.pt")
         )
+
+
+def event_tensor_to_parquet_df(tensor: torch.tensor, event: Event):
+    tracking_data = tensor.numpy()
+
+    # flatten to store in parquet
+    T, P, C = tracking_data.shape
+    flattened_data = tracking_data.reshape(T, P * C)
+
+    df = pd.DataFrame(flattened_data)
+    df["game_id"] = event.game_id
+    df["event_id"] = event.event_id
+    return df
+
+
+def write_parquet(data_path: str):
+    parquet_path = os.path.join(data_path, DataPaths.PARQUET.value)
+    if not os.path.exists(parquet_path):
+        os.makedirs(parquet_path)
+
+    game_ids = list_files_in_directory(path=os.path.join(data_path, DataPaths.PREPROCESSED.value), suffix=".json")
+
+    for game_id in game_ids:
+        event_list = load_json(path=os.path.join(data_path, DataPaths.PREPROCESSED.value, f"{game_id}.json"))
+        data = []
+
+        for event_dict in event_list:
+            event = Event.from_dict(data=event_dict)
+            tensor = convert_event_to_tensors(event=event)
+            if tensor is not None:
+                parquet_df = event_tensor_to_parquet_df(tensor=tensor, event=event)
+                data += [parquet_df]
+
+        full_df = pd.concat(data, ignore_index=True)
+        parquet_file = os.path.join(parquet_path, f"{game_id}.parquet")
+        table = pa.Table.from_pandas(full_df)
+        pq.write_table(table, parquet_file)

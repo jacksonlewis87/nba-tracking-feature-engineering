@@ -1,6 +1,7 @@
+import numpy as np
 import pytest
 import torch
-from unittest.mock import Mock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 from nba_tracking_data_commons.dto.tracking import Event, Frame
 
@@ -16,6 +17,8 @@ from preprocessing.preprocessing import (
     get_game_ids,
     preprocess_tracking_data,
     write_tensors,
+    event_tensor_to_parquet_df,
+    write_parquet,
 )
 from preprocessing.preprocessing_config import PreprocessingConfig
 
@@ -464,5 +467,123 @@ def test_write_tensors(
         calls=[
             call((mock_torch.cat.return_value, mock_torch.tensor.return_value), mock_path_join.return_value),
             call((mock_torch.cat.return_value, mock_torch.tensor.return_value), mock_path_join.return_value),
+        ]
+    )
+
+
+@patch("preprocessing.preprocessing.pd.DataFrame")
+def test_event_tensor_to_parquet_df(mock_dataframe):
+    tensor = torch.zeros(4, 3, 2)
+    game_id = "some-game-id"
+    event_id = "some-event-id"
+    event = MagicMock(spec=Event)
+    event.game_id = game_id
+    event.event_id = event_id
+    mock_dataframe.return_value = {}
+
+    result = event_tensor_to_parquet_df(tensor=tensor, event=event)
+
+    assert mock_dataframe.call_args[0][0].shape == (4, 6)
+    assert result == {
+        "game_id": game_id,
+        "event_id": event_id,
+    }
+
+
+@patch("preprocessing.preprocessing.os.path.exists")
+@patch("preprocessing.preprocessing.os.makedirs")
+@patch("preprocessing.preprocessing.list_files_in_directory")
+@patch("preprocessing.preprocessing.load_json")
+@patch("preprocessing.preprocessing.convert_event_to_tensors")
+@patch("preprocessing.preprocessing.os.path.join")
+@patch("preprocessing.preprocessing.Event")
+@patch("preprocessing.preprocessing.event_tensor_to_parquet_df")
+@patch("preprocessing.preprocessing.pd.concat")
+@patch("preprocessing.preprocessing.pa.Table")
+@patch("preprocessing.preprocessing.pq.write_table")
+def test_write_parquet(
+    mock_pq_write_table,
+    mock_pa_table,
+    mock_pd_concat,
+    mock_event_tensor_to_parquet_df,
+    mock_event,
+    mock_path_join,
+    mock_convert_event_to_tensors,
+    mock_load_json,
+    mock_list_files_in_directory,
+    mock_makedirs,
+    mock_path_exists,
+):
+    mock_path_exists.return_value = False
+    data_path = "test_data_path"
+    mock_list_files_in_directory.return_value = ["game1", "game2"]
+    mock_event_list1 = [{"event": "event_data1"}, {"event": "event_data2"}, {"event": "event_data3"}]
+    mock_event_list2 = [{"event": "event_data4"}]
+    mock_load_json.side_effect = [mock_event_list1, mock_event_list2]
+    mock_tensor1 = Mock()
+    mock_tensor1.size.return_value = 10
+    mock_tensor2 = Mock()
+    mock_tensor2.size.return_value = 20
+    mock_convert_event_to_tensors.side_effect = [mock_tensor1, None, mock_tensor2, mock_tensor1]
+
+    write_parquet(data_path=data_path)
+
+    mock_path_join.assert_has_calls(
+        [
+            call(data_path, DataPaths.PARQUET.value),
+            call(data_path, DataPaths.PREPROCESSED.value),
+            call(data_path, DataPaths.PREPROCESSED.value, "game1.json"),
+            call(mock_path_join.return_value, "game1.parquet"),
+            call(data_path, DataPaths.PREPROCESSED.value, "game2.json"),
+            call(mock_path_join.return_value, "game2.parquet"),
+        ]
+    )
+    mock_path_exists.assert_called_once_with(mock_path_join.return_value)
+    mock_makedirs.assert_called_once_with(mock_path_join.return_value)
+    mock_list_files_in_directory.assert_called_once_with(path=mock_path_join.return_value, suffix=".json")
+    mock_load_json.assert_has_calls(
+        calls=[
+            call(path=mock_path_join.return_value),
+            call(path=mock_path_join.return_value),
+        ]
+    )
+    mock_event.from_dict.assert_has_calls(
+        calls=[
+            call(data={"event": "event_data1"}),
+            call(data={"event": "event_data2"}),
+        ]
+    )
+    mock_convert_event_to_tensors.assert_has_calls(
+        calls=[
+            call(event=mock_event.from_dict.return_value),
+            call(event=mock_event.from_dict.return_value),
+        ]
+    )
+    mock_event_tensor_to_parquet_df.assert_has_calls(
+        calls=[
+            call(tensor=mock_tensor1, event=mock_event.from_dict.return_value),
+            call(tensor=mock_tensor2, event=mock_event.from_dict.return_value),
+            call(tensor=mock_tensor1, event=mock_event.from_dict.return_value),
+        ]
+    )
+    mock_pd_concat.assert_has_calls(
+        calls=[
+            call(
+                [mock_event_tensor_to_parquet_df.return_value, mock_event_tensor_to_parquet_df.return_value],
+                ignore_index=True,
+            ),
+            call([mock_event_tensor_to_parquet_df.return_value], ignore_index=True),
+        ]
+    )
+    mock_pa_table.from_pandas.assert_has_calls(
+        calls=[
+            call(mock_pd_concat.return_value),
+            call(mock_pd_concat.return_value),
+        ]
+    )
+    mock_pq_write_table.assert_has_calls(
+        calls=[
+            call(mock_pa_table.from_pandas.return_value, mock_path_join.return_value),
+            call(mock_pa_table.from_pandas.return_value, mock_path_join.return_value),
         ]
     )
